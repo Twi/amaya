@@ -64,10 +64,9 @@ class IRCBot:
         # Get a list of IRCv3 CAPs
         self.send_line("CAP LS")
 
-        # If we aren't using SASL, we can just directly send NICK and USER
-        if not self.sasl:
-            self.send_line("NICK %s" % self.nick)
-            self.send_line("USER {0} {0} {0} :{1}".format(user, gecos))
+        # Register with the remote server
+        self.send_line("NICK %s" % self.nick)
+        self.send_line("USER {0} {0} {0} :{1}".format(user, gecos))
 
     def send_line(self, line):
         """
