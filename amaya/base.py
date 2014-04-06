@@ -14,7 +14,7 @@ class IRCBot:
 
     def __init__(self, host, port, ssl=False, nick="AmayaTest1", user="amaya",
             gecos="Amaya 0.1", netname="ExampleNet", nickservpass=None,
-            encoding="UTF-8", sasl=False):
+            encoding="UTF-8", sasl=False, debug=False, autojoin=[]):
         """
         Args: remote host to connect to, port number to connect to
 
@@ -29,6 +29,7 @@ class IRCBot:
          - sasl: Whether or not to attempt SASL authentication
         """
 
+        # Lots of variables, no way around this.
         self.link = socket.socket()
         self.link.connect((host, port))
 
@@ -43,26 +44,95 @@ class IRCBot:
         self.nickservpass = nickservpass
         self.encoding = encoding
         self.sasl = sasl
+        self.debug = debug
+        self.autojoin = []
 
         self.servername = ""
         self.ircdver = ""
         self.snomask = ""
+        self.loggedinas = ""
 
+        self.ircdumodes = []
         self.umodes = []
         self.channels = {}
+        self.clients = {} # XXX: Is this a good idea?
         self.isupport = {}
 
         if self.ssl:
             ssl.wrap_socket(self.link)
 
-        self.send_line("NICK %s" % self.nick)
-        self.send_line("USER {0} {0} {0} :{1}".format(user, gecos))
+        # Get a list of IRCv3 CAPs
+        self.send_line("CAP LS")
+
+        # If we aren't using SASL, we can just directly send NICK and USER
+        if not self.sasl:
+            self.send_line("NICK %s" % self.nick)
+            self.send_line("USER {0} {0} {0} :{1}".format(user, gecos))
 
     def send_line(self, line):
-        print(">>>", line)
+        """
+        Takes in a raw line and sends it to the server. Don't use this without
+        good reason.
+        """
+
+        if debug:
+            print(">>>", line)
+
         self.link.send(bytes("%s\r\n" % line, "UTF-8"))
 
+    # The following functions are high level binds to common IRC client commands
+
+    def join(self, channel):
+        """
+        Join a channel and set up the appropriate data structures.
+        """
+
+        self.channels[channel.upper()] = {}
+
+        self.send_line("JOIN %s" % channel)
+
+    def part(self, channel, reason="Leaving"):
+        """
+        Leave a channel and forget about it.
+        """
+
+        del self.channels[channel.upper()]
+
+        self.send_line("PART %s :%s" % (channel, reason))
+
+    def message_like(self, kind, target, message):
+        """
+        NOTICE and PRIVMSG are pretty similar commands. Handle both of them
+        the same.
+        """
+
+        if message == "":
+            message = " "
+
+        self.send_line("%s %s :%s" % (kind, target, message))
+
+    def notice(self, target, message):
+        """
+        Sends a NOTICE to someone. Please use this over PRIVMSG. Other bots
+        will not loop.
+        """
+
+        self.message_like("NOTICE", target, message)
+
+    def privmsg(self, target, message):
+        """
+        Sends a PRIVMSG to someone.
+        """
+
+        self.message_like("PRIVMSG", target, message)
+
+    # Now is select() baggage and the line scraper
+
     def process(self):
+        """
+        Call this function when you have data on the socket.
+        """
+
         tbuf = self.link.recv(2048)
         tbuf = self.__buf + tbuf.decode('UTF-8')
 
@@ -75,7 +145,13 @@ class IRCBot:
             self.process_line(line)
 
     def process_line(self, line):
-        print("<<<", line)
+        """
+        Take a single line of traffic and process it.
+        """
+
+        if debug:
+            print("<<<", line)
+
         line = IRCLine(line)
         if line.verb == "PING":
             self.send_line("PONG :%s" % line.args[-1])
@@ -85,6 +161,7 @@ class IRCBot:
             func(line)
 
     # Base implementation of protocol verbs
+    # Numerics should be first and in numerical order
 
     def on_001(self, line):
         """
@@ -102,11 +179,14 @@ class IRCBot:
 
         self.servername = line.args[0]
         self.ircdver = line.args[1]
+        # Not scraping CMODES out here, 005 gives me a better place to find
+        # what has what syntax
+        self.ircdumodes = line.args[3]
 
         # Apparently people care about +B that it's worth just setting it if
         # available and not worrying about accidentally breaking some weird
         # bot rule.
-        if "B" in line.args[3]:
+        if "B" in self.ircdumodes:
             self.send_line("MODE %s +B" % self.nick)
 
     def on_005(self, line):
@@ -128,6 +208,30 @@ class IRCBot:
 
             else:
                 self.isupport[supp[0]] = supp[1]
+
+    def on_900(self, line):
+        """
+        RPL_LOGGEDIN: Sent when the ircd logs you in via services sucessfully.
+        Some IRC daemons send this twice when you authenticate with sasl, but
+        other irc daemons only send this once.
+        """
+
+        pass
+
+    # Put named verbs past here
+
+    def on_CAP(self, line):
+        if line.args[1] == "LS":
+            for cap in line.args[-1].split():
+                if cap == "sasl":
+                    if self.sasl:
+                        self.send_line("AUTHENTICATE PLAIN")
+                elif cap == "account-notify":
+                    self.send_line("CAP REQ account-notify")
+                elif cap == "multi-prefix":
+                    self.send_line("CAP REQ multi-prefix")
+            if not self.sasl:
+                self.send_line("CAP END")
 
     def on_ERROR(self, line):
         """
