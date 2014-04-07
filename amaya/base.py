@@ -125,6 +125,21 @@ class IRCBot:
 
         self.message_like("PRIVMSG", target, message)
 
+    def ping(self, message="Amaya"):
+        """
+        Send a PING to the remote server.
+        """
+
+        self.send_line("PING :%" % message)
+
+    def change_nick(self, nickname):
+        """
+        Request to change nickname
+        """
+
+        self.expecting_nickchange = True
+        self.send_line("NICK %s" % nickname)
+
     # Now is select() baggage and the line scraper
 
     def process(self):
@@ -170,6 +185,8 @@ class IRCBot:
 
         self.netname = line.args[-1].split()[3]
 
+        self.ping()
+
     def on_004(self, line):
         """
         RPL_MYINFO: This numeric shows the server name, ircd type and version,
@@ -208,6 +225,25 @@ class IRCBot:
             else:
                 self.isupport[supp[0]] = supp[1]
 
+    def on_376(self, line):
+        """
+        RPL_ENDMOTD: Sent once the server finishes its motd. Usually, this is
+        when channel joining is safe. But we are smarter than that, sometimes
+        servers don't have an MOTD.
+        """
+
+        pass
+
+    def on_433(self, line):
+        """
+        ERR_NICKINUSE: Sent from the server when a client tries to use a
+        nickname that another client is using. We should append an underscore
+        to our nick and request nickchange to that.
+        """
+
+        self.nick += "_"
+        self.change_nick(self.nick)
+
     def on_900(self, line):
         """
         RPL_LOGGEDIN: Sent when the ircd logs you in via services sucessfully.
@@ -239,4 +275,25 @@ class IRCBot:
         """
 
         raise ConnectionError(line.args[-1])
+
+    def on_NICK(self, line):
+        """
+        The server changed our nickname. If we are not expecting this, change
+        nickname back.
+        """
+
+        if not self.expecting_nickchange:
+            self.change_nick(self.nick)
+        else:
+            self.nick = line.args[-1]
+
+    def on_PONG(self, line):
+        """
+        The server replied to our PING message.
+        """
+
+        if line.source == self.servername:
+            if len(self.channels) == 0:
+                for channel in self.autojoin:
+                    self.join(channel)
 
